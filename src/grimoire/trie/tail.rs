@@ -427,18 +427,18 @@ impl Tail {
 
         if self.end_flags.empty() {
             // Text mode
-            let start_offset = offset - query_pos;
+            let initial_query_pos = query_pos;
             loop {
-                if self.buf[start_offset + query_pos] != query_bytes[query_pos] {
+                let buf_index = offset + (query_pos - initial_query_pos);
+                if self.buf[buf_index] != query_bytes[query_pos] {
                     state.set_query_pos(query_pos);
                     return false;
                 }
-                state.key_buf_mut().push(self.buf[start_offset + query_pos]);
+                state.key_buf_mut().push(self.buf[buf_index]);
                 query_pos += 1;
 
-                if start_offset + query_pos >= self.buf.size()
-                    || self.buf[start_offset + query_pos] == 0
-                {
+                let buf_index = offset + (query_pos - initial_query_pos);
+                if buf_index >= self.buf.size() || self.buf[buf_index] == 0 {
                     state.set_query_pos(query_pos);
                     return true;
                 }
@@ -450,7 +450,7 @@ impl Tail {
 
             // Append rest of tail
             state.set_query_pos(query_pos);
-            let mut i = start_offset + query_pos;
+            let mut i = offset + (query_pos - initial_query_pos);
             while i < self.buf.size() && self.buf[i] != 0 {
                 state.key_buf_mut().push(self.buf[i]);
                 i += 1;
