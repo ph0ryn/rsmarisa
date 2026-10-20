@@ -74,16 +74,36 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run debug library and regression tests
-        run: cargo test --lib --test basic_lookup_test --test binary_compat_test
+        run: cargo test --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
 
       - name: Run release regression tests
-        run: cargo test --release --test basic_lookup_test --test binary_compat_test
+        run: cargo test --release --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
 
       - name: Run debug library and regression tests without mmap
-        run: cargo test --no-default-features --lib --test basic_lookup_test --test binary_compat_test
+        run: cargo test --no-default-features --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
 
       - name: Run release regression tests without mmap
-        run: cargo test --release --no-default-features --test basic_lookup_test --test binary_compat_test
+        run: cargo test --release --no-default-features --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
+
+  safety-miri:
+    name: Safety regressions (Miri)
+    runs-on: ubuntu-latest
+    env:
+      # Permit temporary-file loading without disabling undefined-behavior checks.
+      MIRIFLAGS: -Zmiri-disable-isolation
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Prepare Miri
+        run: cargo miri setup
+
+      - name: Check loading and ownership regressions
+        run: cargo miri test --no-default-features --test io_safety_test --test ownership_safety_test
 
   clippy:
     name: Clippy
