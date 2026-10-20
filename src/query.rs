@@ -7,24 +7,25 @@ use std::fmt;
 /// Query represents a search query with a string and optional ID.
 ///
 /// A query can contain either:
-/// - A string to search for (ptr + length)
+/// - An owned string to search for
 /// - An ID to reverse lookup
+///
+/// Unlike the original C++ query, setter inputs are copied so safe access and
+/// cloning do not depend on the caller keeping its input alive or unchanged.
 #[derive(Clone)]
 pub struct Query {
-    /// Pointer to query string data (borrowed).
-    ptr: Option<*const u8>,
-    /// Length of query string.
-    length: usize,
+    /// Owned query bytes, if a string is set.
+    bytes: Option<Vec<u8>>,
     /// Query ID for reverse lookup.
     id: usize,
 }
 
-// Manual Debug implementation since raw pointers don't implement Debug
+// Keep query contents out of the debug representation.
 impl fmt::Debug for Query {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Query")
-            .field("ptr", &self.ptr.map(|_| "..."))
-            .field("length", &self.length)
+            .field("ptr", &self.ptr().map(|_| "..."))
+            .field("length", &self.length())
             .field("id", &self.id)
             .finish()
     }
@@ -39,11 +40,7 @@ impl Default for Query {
 impl Query {
     /// Creates a new empty query.
     pub fn new() -> Self {
-        Query {
-            ptr: None,
-            length: 0,
-            id: 0,
-        }
+        Query { bytes: None, id: 0 }
     }
 
     /// Returns the character at the specified index.
@@ -52,28 +49,25 @@ impl Query {
     ///
     /// Panics if index is out of bounds.
     pub fn get(&self, i: usize) -> u8 {
-        assert!(i < self.length, "Index out of bounds");
-        if let Some(ptr) = self.ptr {
-            unsafe { *ptr.add(i) }
-        } else {
-            panic!("Query has no string data");
-        }
+        assert!(i < self.length(), "Index out of bounds");
+        self.as_bytes()[i]
     }
 
-    /// Sets the query from a string slice.
+    /// Copies a string slice into the query's owned storage.
     pub fn set_str(&mut self, s: &str) {
-        self.ptr = Some(s.as_ptr());
-        self.length = s.len();
+        let bytes = self.bytes.get_or_insert_with(Vec::new);
+        bytes.clear();
+        bytes.extend_from_slice(s.as_bytes());
     }
 
-    /// Sets the query from a byte slice.
+    /// Copies a byte slice into the query's owned storage.
     pub fn set_bytes(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
-            self.ptr = None;
-            self.length = 0;
+            self.bytes = None;
         } else {
-            self.ptr = Some(bytes.as_ptr());
-            self.length = bytes.len();
+            let storage = self.bytes.get_or_insert_with(Vec::new);
+            storage.clear();
+            storage.extend_from_slice(bytes);
         }
     }
 
@@ -86,11 +80,7 @@ impl Query {
     ///
     /// Returns an empty slice if no string is set.
     pub fn as_bytes(&self) -> &[u8] {
-        if let Some(ptr) = self.ptr {
-            unsafe { std::slice::from_raw_parts(ptr, self.length) }
-        } else {
-            &[]
-        }
+        self.bytes.as_deref().unwrap_or(&[])
     }
 
     /// Returns the query string as a str reference.
@@ -102,14 +92,16 @@ impl Query {
         std::str::from_utf8(self.as_bytes()).expect("Invalid UTF-8 in query")
     }
 
-    /// Returns a pointer to the query data.
+    /// Returns a pointer into the query's owned data.
+    ///
+    /// The pointer may be invalidated by mutating or dropping the query.
     pub fn ptr(&self) -> Option<*const u8> {
-        self.ptr
+        self.bytes.as_ref().map(|bytes| bytes.as_ptr())
     }
 
     /// Returns the length of the query string.
     pub fn length(&self) -> usize {
-        self.length
+        self.as_bytes().len()
     }
 
     /// Returns the query ID.
@@ -127,11 +119,6 @@ impl Query {
         std::mem::swap(self, other);
     }
 }
-
-// Safety: Query only holds a pointer that must remain valid for its lifetime.
-// The user is responsible for ensuring the borrowed data outlives the Query.
-unsafe impl Send for Query {}
-unsafe impl Sync for Query {}
 
 #[cfg(test)]
 mod tests {

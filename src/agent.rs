@@ -4,7 +4,7 @@
 //! - include/marisa/agent.h
 //! - lib/marisa/agent.cc
 
-use crate::grimoire::trie::state::{State, StatusCode};
+use crate::grimoire::trie::state::State;
 use crate::key::Key;
 use crate::query::Query;
 use std::io;
@@ -16,6 +16,9 @@ use std::io;
 /// - Reverse lookup (query with ID → key with string)
 /// - Common prefix search
 /// - Predictive search
+///
+/// Query and result bytes are owned independently of the search State.
+#[derive(Clone)]
 pub struct Agent {
     /// Query for search operations.
     query: Query,
@@ -28,36 +31,6 @@ pub struct Agent {
 impl Default for Agent {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Clone for Agent {
-    fn clone(&self) -> Self {
-        let mut cloned = Agent {
-            query: self.query.clone(),
-            key: self.key.clone(),
-            state: self.state.as_ref().map(|s| Box::new((**s).clone())),
-        };
-
-        // Update agent after copying state
-        let should_update = cloned.state.is_some();
-        if should_update {
-            if let Some(ref state) = cloned.state {
-                let status = state.status_code();
-                match status {
-                    StatusCode::ReadyToPredictiveSearch | StatusCode::EndOfPredictiveSearch => {
-                        // Key points into state buffer - repoint after copy
-                        let key_buf = state.key_buf();
-                        cloned.key.set_bytes(key_buf);
-                    }
-                    _ => {
-                        // Key is null or points to query - no update needed
-                    }
-                }
-            }
-        }
-
-        cloned
     }
 }
 
@@ -161,23 +134,20 @@ impl Agent {
         self.key.set_id(id);
     }
 
-    /// Sets the key to point to the state's key buffer.
+    /// Copies the state's key buffer into the owned result key.
     ///
     /// This is used after operations like reverse_lookup that build
     /// the key in the state's buffer.
     pub fn set_key_from_state_buf(&mut self) {
         if let Some(ref state) = self.state {
             let buf = state.key_buf();
-            // Set key to point to state's buffer
-            // SAFETY: The buffer is owned by state which is owned by self,
-            // so it will live as long as self lives.
             self.key.set_bytes(buf);
         } else {
             panic!("Agent must have state to set key from state buffer");
         }
     }
 
-    /// Sets the key to point to the query buffer.
+    /// Copies the query buffer into the owned result key.
     ///
     /// This is used after a successful lookup to set the result key
     /// to the query string that was searched for.
@@ -186,7 +156,7 @@ impl Agent {
         self.key.set_bytes(bytes);
     }
 
-    /// Sets the key to point to a prefix of the query buffer.
+    /// Copies a prefix of the query buffer into the owned result key.
     ///
     /// This is used during prefix searches to set the result key
     /// to a prefix of the query string.
@@ -232,27 +202,10 @@ impl Agent {
     }
 }
 
-/// Updates agent's key pointer after copying state.
-///
-/// In predictive search states, the agent's key points into the state's
-/// key buffer. After copying state, we need to update the pointer.
-#[allow(dead_code)]
-fn update_agent_after_copying_state(state: &State, agent: &mut Agent) {
-    match state.status_code() {
-        StatusCode::ReadyToPredictiveSearch | StatusCode::EndOfPredictiveSearch => {
-            // Key points into state buffer - repoint after copy
-            let key_buf = state.key_buf();
-            agent.key.set_bytes(key_buf);
-        }
-        _ => {
-            // Key is null or points to query - no update needed
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grimoire::trie::state::StatusCode;
 
     #[test]
     fn test_agent_new() {

@@ -7,26 +7,16 @@
 use crate::key::Key;
 use std::io;
 
-/// Block sizes for memory allocation.
-const BASE_BLOCK_SIZE: usize = 4096;
-const EXTRA_BLOCK_SIZE: usize = 1024;
+/// Number of Key objects per allocation block.
 const KEY_BLOCK_SIZE: usize = 256;
 
 /// Keyset collects keys for trie construction.
 ///
-/// Keys are stored in blocks to minimize allocations and provide
-/// stable addresses for borrowed string data.
+/// Key objects are stored in reusable blocks. Unlike the original C++ keyset,
+/// each key owns its string so mutable access can safely move it out of the set.
 pub struct Keyset {
-    /// Blocks of base size for normal string storage.
-    base_blocks: Vec<Box<[u8; BASE_BLOCK_SIZE]>>,
-    /// Blocks for strings larger than EXTRA_BLOCK_SIZE.
-    extra_blocks: Vec<Vec<u8>>,
-    /// Blocks of Key objects.
+    /// Blocks of Key objects, each owning its bytes.
     key_blocks: Vec<Box<[Key; KEY_BLOCK_SIZE]>>,
-    /// Current write position in the current base block.
-    ptr_offset: usize,
-    /// Available space remaining in current base block.
-    avail: usize,
     /// Total number of keys.
     size: usize,
     /// Total length of all key strings.
@@ -43,11 +33,7 @@ impl Keyset {
     /// Creates a new empty keyset.
     pub fn new() -> Self {
         Keyset {
-            base_blocks: Vec::new(),
-            extra_blocks: Vec::new(),
             key_blocks: Vec::new(),
-            ptr_offset: 0,
-            avail: 0,
             size: 0,
             total_length: 0,
         }
@@ -55,58 +41,22 @@ impl Keyset {
 
     /// Adds a key to the keyset.
     pub fn push_back_key(&mut self, key: &Key) {
-        let key_bytes = key.as_bytes();
-        let key_ptr = self.reserve(key_bytes.len());
-
-        // Copy string data
-        unsafe {
-            std::ptr::copy_nonoverlapping(key_bytes.as_ptr(), key_ptr, key_bytes.len());
-        }
-
-        // Create new Key in key block
-        let key_block_idx = self.size / KEY_BLOCK_SIZE;
-        let key_idx = self.size % KEY_BLOCK_SIZE;
-        let new_key = &mut self.key_blocks[key_block_idx][key_idx];
-
-        // Set string from our stable storage
-        let stored_slice =
-            unsafe { std::slice::from_raw_parts(key_ptr as *const u8, key_bytes.len()) };
-        new_key.set_bytes(stored_slice);
+        let new_key = self.next_key_mut();
+        new_key.set_bytes(key.as_bytes());
         new_key.set_id(key.id());
 
         self.size += 1;
-        self.total_length += key_bytes.len();
+        self.total_length += key.length();
     }
 
-    /// Adds a key with an end marker character.
+    /// Adds a key with an end marker character outside its logical length.
     pub fn push_back_key_with_marker(&mut self, key: &Key, end_marker: u8) {
-        if self.size / KEY_BLOCK_SIZE == self.key_blocks.len() {
-            self.append_key_block();
-        }
-
-        let key_bytes = key.as_bytes();
-        let total_len = key_bytes.len() + 1;
-        let key_ptr = self.reserve(total_len);
-
-        // Copy string data and add marker
-        unsafe {
-            std::ptr::copy_nonoverlapping(key_bytes.as_ptr(), key_ptr, key_bytes.len());
-            *key_ptr.add(key_bytes.len()) = end_marker;
-        }
-
-        // Create new Key in key block
-        let key_block_idx = self.size / KEY_BLOCK_SIZE;
-        let key_idx = self.size % KEY_BLOCK_SIZE;
-        let new_key = &mut self.key_blocks[key_block_idx][key_idx];
-
-        // Set string from our stable storage (without end marker)
-        let stored_slice =
-            unsafe { std::slice::from_raw_parts(key_ptr as *const u8, key_bytes.len()) };
-        new_key.set_bytes(stored_slice);
+        let new_key = self.next_key_mut();
+        new_key.set_bytes_with_marker(key.as_bytes(), end_marker);
         new_key.set_id(key.id());
 
         self.size += 1;
-        self.total_length += key_bytes.len();
+        self.total_length += key.length();
     }
 
     /// Adds a string to the keyset with default weight of 1.0.
@@ -120,21 +70,8 @@ impl Keyset {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Key too long"));
         }
 
-        let key_ptr = self.reserve(bytes.len());
-
-        // Copy string data
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), key_ptr, bytes.len());
-        }
-
-        // Create new Key in key block
-        let key_block_idx = self.size / KEY_BLOCK_SIZE;
-        let key_idx = self.size % KEY_BLOCK_SIZE;
-        let key = &mut self.key_blocks[key_block_idx][key_idx];
-
-        // Set string from our stable storage
-        let stored_slice = unsafe { std::slice::from_raw_parts(key_ptr as *const u8, bytes.len()) };
-        key.set_bytes(stored_slice);
+        let key = self.next_key_mut();
+        key.set_bytes(bytes);
         key.set_weight(weight);
 
         self.size += 1;
@@ -185,8 +122,6 @@ impl Keyset {
 
     /// Resets the keyset to reuse allocated memory.
     pub fn reset(&mut self) {
-        self.ptr_offset = 0;
-        self.avail = 0;
         self.size = 0;
         self.total_length = 0;
         // Keep allocated blocks for reuse
@@ -202,50 +137,12 @@ impl Keyset {
         std::mem::swap(self, other);
     }
 
-    /// Reserves space for a string of the given size.
-    ///
-    /// Returns a mutable pointer to the reserved space.
-    fn reserve(&mut self, size: usize) -> *mut u8 {
-        // Ensure we have a key block for the new key
+    /// Returns the next reusable owned Key slot, allocating a block if needed.
+    fn next_key_mut(&mut self) -> &mut Key {
         if self.size / KEY_BLOCK_SIZE == self.key_blocks.len() {
             self.append_key_block();
         }
-
-        // For large strings, use an extra block
-        if size > EXTRA_BLOCK_SIZE {
-            self.append_extra_block(size);
-            return self.extra_blocks.last_mut().unwrap().as_mut_ptr();
-        }
-
-        // Need a new base block?
-        if size > self.avail {
-            self.append_base_block();
-        }
-
-        // Get pointer to available space
-        let block_idx = self.base_blocks.len() - 1;
-        let ptr = unsafe {
-            self.base_blocks[block_idx]
-                .as_mut_ptr()
-                .add(self.ptr_offset)
-        };
-
-        self.ptr_offset += size;
-        self.avail -= size;
-
-        ptr
-    }
-
-    /// Appends a new base block for string storage.
-    fn append_base_block(&mut self) {
-        self.base_blocks.push(Box::new([0u8; BASE_BLOCK_SIZE]));
-        self.ptr_offset = 0;
-        self.avail = BASE_BLOCK_SIZE;
-    }
-
-    /// Appends a new extra block for large string storage.
-    fn append_extra_block(&mut self, size: usize) {
-        self.extra_blocks.push(vec![0u8; size]);
+        &mut self.key_blocks[self.size / KEY_BLOCK_SIZE][self.size % KEY_BLOCK_SIZE]
     }
 
     /// Appends a new key block.

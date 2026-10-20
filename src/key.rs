@@ -25,23 +25,26 @@ impl Default for KeyUnion {
 /// Key represents a dictionary key with its string and metadata.
 ///
 /// A key contains:
-/// - A string (ptr + length)
+/// - An owned string and its logical length
 /// - Either an ID or a weight (union)
+///
+/// Unlike the original C++ key, every key owns its bytes. This also makes cloned
+/// keys and keys moved out of an Agent or Keyset independent of their old owner.
 #[derive(Clone)]
 pub struct Key {
-    /// Pointer to key string data (borrowed).
-    ptr: Option<*const u8>,
-    /// Length of key string.
+    /// Owned key bytes, optionally followed by an end marker.
+    bytes: Option<Vec<u8>>,
+    /// Logical length of the key, excluding any end marker.
     length: u32,
     /// Union holding either ID or weight.
     union: KeyUnion,
 }
 
-// Manual Debug implementation since raw pointers don't implement Debug
+// Keep key contents out of the debug representation.
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Key")
-            .field("ptr", &self.ptr.map(|_| "..."))
+            .field("ptr", &self.ptr().map(|_| "..."))
             .field("length", &self.length)
             .field("id_or_weight", &unsafe { self.union.id })
             .finish()
@@ -58,7 +61,7 @@ impl Key {
     /// Creates a new empty key.
     pub fn new() -> Self {
         Key {
-            ptr: None,
+            bytes: None,
             length: 0,
             union: KeyUnion::default(),
         }
@@ -70,30 +73,37 @@ impl Key {
     ///
     /// Panics if index is out of bounds.
     pub fn get(&self, i: usize) -> u8 {
-        assert!((i as u32) < self.length, "Index out of bounds");
-        if let Some(ptr) = self.ptr {
-            unsafe { *ptr.add(i) }
-        } else {
-            panic!("Key has no string data");
-        }
+        assert!(i < self.length(), "Index out of bounds");
+        self.as_bytes()[i]
     }
 
-    /// Sets the key from a string slice.
+    /// Copies a string slice into the key's owned storage.
     pub fn set_str(&mut self, s: &str) {
         assert!(s.len() <= u32::MAX as usize, "String too long");
-        self.ptr = Some(s.as_ptr());
+        let bytes = self.bytes.get_or_insert_with(Vec::new);
+        bytes.clear();
+        bytes.extend_from_slice(s.as_bytes());
         self.length = s.len() as u32;
     }
 
-    /// Sets the key from a byte slice.
+    /// Copies a byte slice into the key's owned storage.
     pub fn set_bytes(&mut self, bytes: &[u8]) {
         assert!(bytes.len() <= u32::MAX as usize, "Bytes too long");
         if bytes.is_empty() {
-            self.ptr = None;
-            self.length = 0;
+            self.bytes = None;
         } else {
-            self.ptr = Some(bytes.as_ptr());
-            self.length = bytes.len() as u32;
+            let storage = self.bytes.get_or_insert_with(Vec::new);
+            storage.clear();
+            storage.extend_from_slice(bytes);
+        }
+        self.length = bytes.len() as u32;
+    }
+
+    /// Copies key bytes and stores a marker outside their logical length.
+    pub(crate) fn set_bytes_with_marker(&mut self, bytes: &[u8], end_marker: u8) {
+        self.set_bytes(bytes);
+        if let Some(storage) = self.bytes.as_mut() {
+            storage.push(end_marker);
         }
     }
 
@@ -112,10 +122,9 @@ impl Key {
     ///
     /// Returns an empty slice if no string is set.
     pub fn as_bytes(&self) -> &[u8] {
-        if let Some(ptr) = self.ptr {
-            unsafe { std::slice::from_raw_parts(ptr, self.length as usize) }
-        } else {
-            &[]
+        match self.bytes.as_deref() {
+            Some(bytes) => &bytes[..self.length()],
+            None => &[],
         }
     }
 
@@ -128,9 +137,11 @@ impl Key {
         std::str::from_utf8(self.as_bytes()).expect("Invalid UTF-8 in key")
     }
 
-    /// Returns a pointer to the key data.
+    /// Returns a pointer into the key's owned data.
+    ///
+    /// The pointer may be invalidated by mutating or dropping the key.
     pub fn ptr(&self) -> Option<*const u8> {
-        self.ptr
+        self.bytes.as_ref().map(|bytes| bytes.as_ptr())
     }
 
     /// Returns the length of the key string.
@@ -168,11 +179,6 @@ impl Key {
         std::mem::swap(self, other);
     }
 }
-
-// Safety: Key only holds a pointer that must remain valid for its lifetime.
-// The user is responsible for ensuring the borrowed data outlives the Key.
-unsafe impl Send for Key {}
-unsafe impl Sync for Key {}
 
 #[cfg(test)]
 mod tests {
