@@ -73,6 +73,7 @@ For files that combine multiple C++ sources:
   - Same integer sizes (use explicit types like `u32`, `u64` instead of `usize`)
 
 - **Verification approach**:
+
   ```bash
   # Build trie with Rust implementation
   echo -e "app\napple\napricot" | cargo run --example marisa-build > rust.dic
@@ -132,6 +133,7 @@ fn test_bit_vector_rust_specific() {
 ```
 
 **Why this is important**:
+
 - Maintains traceability to original test coverage
 - Helps identify compatibility requirements vs. Rust enhancements
 - Enables verification against C++ behavior when debugging
@@ -159,55 +161,47 @@ fn test_bit_vector_rust_specific() {
 
 - **Minimize `unsafe`**: Only use `unsafe` where necessary for performance or C++ compatibility; document why it's needed
 
-### Memory Safety with Raw Pointers
+### Query and Key Ownership
 
-**Critical**: This codebase uses raw pointers extensively (especially in `Key` struct) to maintain C++ API compatibility. Extra care is required to avoid use-after-free bugs.
+Public `Query` and `Key` values own the bytes supplied to their setters. This
+intentionally differs from the borrowed-pointer C++ API: a safe Rust setter
+cannot require an input lifetime that its signature does not express.
 
-**Common Pitfall - Dangling Pointers**:
-```rust
-// ❌ WRONG: Temporary Vec is freed, leaving dangling pointer
-let temp_vec = state.key_buf().to_vec();
-agent.set_key_bytes(&temp_vec);  // Stores raw pointer
-// temp_vec dropped here → pointer now invalid!
+- Setters capture a snapshot; later input mutation does not change the value.
+- Clones and keys moved out through mutable accessors retain their own bytes.
+- Agent result helpers copy from query/state buffers. Replacing those buffers,
+  resetting a keyset, or dropping the original owner cannot invalidate a key.
+- Do not reintroduce private borrowed keys behind a public `&mut Key`: callers
+  can use `mem::take`, `replace`, or `swap` to move the key out of its owner.
+- Preserve the native dictionary format and document copying costs separately
+  from functional compatibility.
 
-// ✅ CORRECT: Point to long-lived buffer
-agent.set_key_from_state_buf();  // Points to agent's own state buffer
+Run ownership regressions under Miri; an ordinary allocator can hide dangling
+references even when value assertions happen to pass:
+
+```bash
+cargo +nightly miri test --no-default-features --test ownership_safety_test
 ```
 
-**Guidelines for Raw Pointer Usage**:
+### Typed Binary I/O
 
-1. **Never point to temporary data**: Raw pointers must only reference data that will outlive the pointer's usage
-   - ✅ Good: Point to agent's internal buffers (query, state.key_buf)
-   - ✅ Good: Point to static data or heap-allocated data with known lifetime
-   - ❌ Bad: Point to local Vec that gets dropped
-   - ❌ Bad: Point to `.to_vec()` results
+Raw input requires `bytemuck::Pod`; output requires `bytemuck::NoUninit`.
+`Copy` alone guarantees neither arbitrary-bit validity nor initialized padding.
+Keep these bounds on I/O methods, not on collection-only `Vector` operations.
 
-2. **Document lifetime assumptions**: When storing raw pointers, document the expected lifetime
-   ```rust
-   pub fn set_bytes(&mut self, bytes: &[u8]) {
-       // SAFETY: Caller must ensure bytes outlive this Key instance
-       self.ptr = Some(bytes.as_ptr());
-   }
-   ```
+- Initialize destination elements before constructing slices passed to safe
+  `Read` implementations, which may inspect the entire buffer or fail midway.
+- Every local unsafe byte-representation impl needs a stable-layout,
+  no-padding, and valid-bit-pattern proof. Preserve C++ field order and sizes.
+- File-backed mmap still has its separate existing external modification and
+  truncation contract; owned `load`/`read` tests do not establish mmap soundness.
 
-3. **Provide safe helper methods**: Add convenience methods that manage lifetimes correctly
-   ```rust
-   pub fn set_key_from_state_buf(&mut self) {
-       // Safe: state is owned by self, so buffer lives as long as self
-       let buf = self.state.as_ref().unwrap().key_buf();
-       self.key.set_bytes(buf);
-   }
-   ```
+The I/O suite creates temporary files. Permit filesystem access without
+turning off undefined-behavior checks:
 
-4. **Test with Address Sanitizer**: When debugging memory issues, use:
-   ```bash
-   RUSTFLAGS="-Z sanitizer=address" cargo test
-   ```
-
-**Known Safe Patterns in this Codebase**:
-- `agent.set_key_from_query()` - Points to agent's query buffer ✅
-- `agent.set_key_from_state_buf()` - Points to agent's state buffer ✅
-- `key.set_str(s)` where `s` is from function parameter - Caller ensures lifetime ✅
+```bash
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --no-default-features --test io_safety_test
+```
 
 ### API Design
 
@@ -220,17 +214,21 @@ agent.set_key_from_state_buf();  // Points to agent's own state buffer
 ### CLI Tools
 
 **Naming Convention**: Use `rsmarisa-` prefix to avoid conflicts with C++ tools
-  - `marisa-build` → `rsmarisa-build`
-  - `marisa-lookup` → `rsmarisa-lookup`
-  - etc.
+
+- `marisa-build` → `rsmarisa-build`
+- `marisa-lookup` → `rsmarisa-lookup`
+- etc.
 
 **Testing Strategy**:
+
 1. **Build release binaries first**: CLI tools should be tested in release mode
+
    ```bash
    cargo build --release --bin rsmarisa-build
    ```
 
 2. **Create integration tests**: Verify output matches C++ tools exactly
+
    ```rust
    #[test]
    fn test_rsmarisa_lookup_compatibility() {
@@ -248,6 +246,7 @@ agent.set_key_from_state_buf();  // Points to agent's own state buffer
 4. **Verify with CI**: Add CLI tool tests to continuous integration
 
 **Implementation Guidelines**:
+
 - Use `clap` for argument parsing (consistent with modern Rust practices)
 - Handle I/O errors properly with meaningful error messages
 - Exit codes should match C++ tools where applicable
@@ -261,7 +260,7 @@ agent.set_key_from_state_buf();  // Points to agent's own state buffer
 
 ## Example Structure
 
-```
+```text
 rust-marisa/
 ├── src/
 │   ├── lib.rs              # Main library entry (from include/marisa.h)
@@ -311,18 +310,22 @@ rust-marisa/
 **IMPORTANT**: The `main` branch is protected. Direct pushes to `main` are not allowed.
 
 **Required workflow**:
+
 1. **Create a feature branch**:
+
    ```bash
    git checkout -b feature/your-feature-name
    ```
 
 2. **Make your changes**: Commit your work to the feature branch
+
    ```bash
    git add .
    git commit -m "feat: your feature description"
    ```
 
 3. **Push to remote**:
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -334,6 +337,7 @@ rust-marisa/
 6. **Merge**: Once approved and CI passes, merge the PR
 
 **Why branch protection?**
+
 - Ensures all changes go through CI validation
 - Maintains code quality and prevents breaking changes
 - Creates a reviewable history of changes
@@ -365,6 +369,7 @@ This project uses [tagpr](https://github.com/Songmu/tagpr) for automated release
 ### How tagpr Works
 
 1. **During Development**: Add your changes under the `## [Unreleased]` section in CHANGELOG.md
+
    ```markdown
    ## [Unreleased]
 
@@ -389,6 +394,7 @@ This project uses [tagpr](https://github.com/Songmu/tagpr) for automated release
 ### Version Bumping Rules
 
 tagpr determines version bumps from commit messages:
+
 - **Major**: Breaking changes (e.g., `feat!: breaking change` or `BREAKING CHANGE:` in commit body)
 - **Minor**: New features (e.g., `feat: add new feature`)
 - **Patch**: Bug fixes and other changes (e.g., `fix: correct bug`, `docs: update README`)
@@ -396,6 +402,7 @@ tagpr determines version bumps from commit messages:
 ### Manual Override
 
 If you need to manually specify the version:
+
 1. Edit the tagpr release PR
 2. Change the version in Cargo.toml
 3. Update the CHANGELOG.md header
@@ -404,18 +411,20 @@ If you need to manually specify the version:
 ### Configuration
 
 The tagpr configuration is in `.tagpr`:
+
 ```ini
 [tagpr]
-	vPrefix = true
-	releaseBranch = main
-	versionFile = Cargo.toml
-	changelog = true
-	command = cargo build --release
+    vPrefix = true
+    releaseBranch = main
+    versionFile = Cargo.toml
+    changelog = true
+    command = cargo build --release
 ```
 
 ## Project Status (as of 2026-01-27)
 
 ### ✅ Completed
+
 - **Core library**: All essential trie operations implemented
 - **Binary compatibility**: Byte-for-byte identical output to C++ version
 - **Test coverage**: 321 tests passing (ported from C++ + Rust-specific)
@@ -428,7 +437,7 @@ The tagpr configuration is in `.tagpr`:
   - `rsmarisa-dump` - Dictionary dumper
 - **Integration tests**: CLI tools verified against C++ counterparts
 - **Memory safety**: Fixed all use-after-free bugs in reverse_lookup and predictive_search
-- **Published to crates.io**: Version 0.2.0 available at https://crates.io/crates/rsmarisa
+- **Published to crates.io**: Version 0.2.0 available at <https://crates.io/crates/rsmarisa>
 - **Automated releases**: Using tagpr for release management and GitHub Actions for CI/CD
 - **Memory-mapped I/O**: Full implementation using memmap2 (v0.2.0)
   - `Trie::mmap(filename)` - Load from file-backed memory map
@@ -442,16 +451,18 @@ The tagpr configuration is in `.tagpr`:
   - Breaking change requiring update of all imports
 
 ### 📝 Known Issues
+
 - Numerous compiler warnings (mostly lifetime annotations) - non-critical
 
 ### 🎯 Future Work
+
 - Add benchmarking tool (`rsmarisa-benchmark`)
 - Clean up compiler warnings
 - Performance optimization
 
 ## References
 
-- Original repository: https://github.com/s-yata/marisa-trie
+- Original repository: <https://github.com/s-yata/marisa-trie>
 - Baseline version: 0.3.1
 - Baseline commit: `4ef33cc5a2b6b4f5e147e4564a5236e163d67982`
 - Original license: BSD-2-Clause OR LGPL-2.1-or-later
@@ -465,10 +476,12 @@ rust-marisa now supports true memory-mapped file I/O using the `memmap2` crate. 
 ### Architecture
 
 **Mapper without lifetime parameter**: The original design used `Mapper<'a>` with a borrowed lifetime, which made it impossible to own file-backed memory maps. The refactored design uses `Mapper` (no lifetime) that can own either:
+
 - File-backed `Mmap` (from memmap2)
 - Borrowed `&'static [u8]` memory
 
 **Ownership model**:
+
 ```rust
 pub struct Mapper {
     mmap: Option<Mmap>,              // File-backed mmap
@@ -499,12 +512,14 @@ trie.load("dictionary.marisa")?;
 ### Implementation Details
 
 All vector types now support both `read()` and `map()` operations:
+
 - `Vector<T>::map()` - Generic vector mapping
 - `BitVector::map()` - Bit vector with rank/select indices
 - `FlatVector::map()` - Flat vector for packed integers
 - `Tail::map()` - Tail storage for suffixes
 
 The binary format is identical between `read()` and `map()`, ensuring:
+
 - Files created by Rust can be loaded by C++ (via both methods)
 - Files created by C++ can be loaded by Rust (via both methods)
 - `load()` and `mmap()` produce identical behavior
@@ -512,10 +527,12 @@ The binary format is identical between `read()` and `map()`, ensuring:
 ### Safety Considerations
 
 **Memory mapping safety**: The `unsafe` block in `Mapper::open_file()` is required because:
+
 - File could be modified externally while mapped
 - File could be truncated while mapped
 
 **Mitigations**:
+
 - Files are opened read-only (PROT_READ)
 - Documentation warns users not to modify files while mapped
 - Matches C++ behavior exactly
@@ -523,6 +540,7 @@ The binary format is identical between `read()` and `map()`, ensuring:
 ### Testing
 
 Added comprehensive tests:
+
 - `test_trie_mmap` - Basic mmap functionality
 - `test_trie_mmap_vs_load_equivalence` - Verify identical behavior with load()
 - `test_trie_mmap_file_not_found` - Error handling
@@ -531,21 +549,26 @@ Added comprehensive tests:
 ### Performance Characteristics
 
 **Large dictionaries (>100MB)**:
+
 - Load time: O(1) instant startup vs O(n) read/parse
 - Memory: OS page cache (shared) vs heap allocation
 - First access: Slower (page fault) then fast
 
 **Small dictionaries (<1MB)**:
+
 - Minimal benefit, setup overhead may dominate
 - Use `load()` for simplicity
 
 ## Key Lessons Learned
 
 ### 1. Use-After-Free Prevention
+
 The most critical bug encountered was use-after-free when storing raw pointers to temporary data. Always ensure pointers reference long-lived data owned by the parent structure.
 
 ### 2. Binary Compatibility Debugging
+
 When output doesn't match C++:
+
 1. Add extensive debug logging to both implementations
 2. Compare step-by-step to find divergence point
 3. Verify data structure layouts match exactly
@@ -553,18 +576,22 @@ When output doesn't match C++:
 5. Use `cmp` for binary file comparison
 
 ### 3. Integration Testing
+
 Testing against the original C++ implementation is invaluable:
+
 - Catches subtle behavioral differences
 - Ensures true compatibility
 - Provides confidence in correctness
 - Documents expected behavior
 
 ### 4. Library Name Consistency
+
 **Problem**: Originally, the package name was `rsmarisa` but the library name was `marisa`. This created confusion where users would write `rsmarisa = "0.2"` in their `Cargo.toml` but then use `use marisa::` in their code.
 
 **Solution**: Align the library name with the package name by changing `[lib] name = "marisa"` to `name = "rsmarisa"` in `Cargo.toml`.
 
 **Why this matters**:
+
 - **User experience**: The import path should match what users specify in their dependencies
 - **Discoverability**: When searching for "rsmarisa", the import path should be obvious
 - **Convention**: Most Rust crates use the same name for package and library

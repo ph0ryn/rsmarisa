@@ -6,29 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [v0.4.2](https://github.com/tokuhirom/rsmarisa/compare/v0.4.1...v0.4.2) - 2026-06-01
-- fix: fix bit-vector word size at 64 bits on all targets by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/23
-- feat: add WASM support via optional mmap feature by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/25
+
+- fix: fix bit-vector word size at 64 bits on all targets by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/23>
+- feat: add WASM support via optional mmap feature by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/25>
 
 ## [v0.4.1](https://github.com/tokuhirom/rsmarisa/compare/v0.4.0...v0.4.1) - 2026-06-01
-- perf: shrink hot-path overhead in trie lookup by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/21
-- perf: optimize hot-path functions and add bench example by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/16
-- feat(io): allow Reader/Writer to accept non-'static Read/Write implementations by @WhiredPlanck in https://github.com/tokuhirom/rsmarisa/pull/19
+
+- perf: shrink hot-path overhead in trie lookup by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/21>
+- perf: optimize hot-path functions and add bench example by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/16>
+- feat(io): allow Reader/Writer to accept non-'static Read/Write implementations by @WhiredPlanck in <https://github.com/tokuhirom/rsmarisa/pull/19>
 
 ## [v0.4.0](https://github.com/tokuhirom/rsmarisa/compare/v0.3.0...v0.4.0) - 2026-02-07
-- perf: optimize hot-path functions for search operations by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/15
+
+- perf: optimize hot-path functions for search operations by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/15>
 
 ## [v0.2.1](https://github.com/tokuhirom/rsmarisa/compare/v0.3.0...v0.2.1) - 2026-02-06
 
 ## [v0.2.1](https://github.com/tokuhirom/rsmarisa/compare/v0.2.0...v0.2.1) - 2026-01-27
-- docs: update README with memory-mapped I/O feature by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/6
-- fix: align library name with package name (marisa -> rsmarisa) by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/8
-- docs: document library name change and migration guide by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/9
+
+- docs: update README with memory-mapped I/O feature by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/6>
+- fix: align library name with package name (marisa -> rsmarisa) by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/8>
+- docs: document library name change and migration guide by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/9>
 
 ## [v0.2.0](https://github.com/tokuhirom/rsmarisa/compare/v0.1.0...v0.2.0) - 2026-01-27
-- docs: add branch protection and PR workflow information by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/1
-- feat: add tagpr for automated release management by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/2
-- feat: add memory-mapped I/O support using memmap2 by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/3
-- Update tagpr.yml by @tokuhirom in https://github.com/tokuhirom/rsmarisa/pull/4
+
+- docs: add branch protection and PR workflow information by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/1>
+- feat: add tagpr for automated release management by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/2>
+- feat: add memory-mapped I/O support using memmap2 by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/3>
+- Update tagpr.yml by @tokuhirom in <https://github.com/tokuhirom/rsmarisa/pull/4>
 
 ## [Unreleased]
 
@@ -44,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Initialize vector payloads before passing them to safe readers, including
+  partial and failed reads.
+- Keep query and key bytes valid after input mutation, cloning, owner reset,
+  or moving a result out of an agent or keyset.
 - Avoid integer underflow when matching valid TextTail prefixes in debug builds.
 - Return `InvalidData` instead of panicking on invalid serialized configuration,
   preserving an existing trie when loading or mapping fails.
@@ -57,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: Raw input and mapping require `bytemuck::Pod`; raw output
+  requires `bytemuck::NoUninit`. `Copy` alone cannot guarantee safe binary I/O.
+  High-level trie signatures and the native dictionary format are unchanged.
+- **BREAKING**: Query and key setters now own input snapshots instead of borrowing
+  unchecked pointers. Later input mutation no longer changes stored bytes; clones and
+  search results have independent storage.
 - **BREAKING**: Library name changed from `marisa` to `rsmarisa` to align with package name
   - Users must update imports from `use marisa::` to `use rsmarisa::`
   - Eliminates confusion where package name (`rsmarisa`) didn't match import path (`marisa`)
