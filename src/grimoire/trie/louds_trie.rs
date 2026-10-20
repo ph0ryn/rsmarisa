@@ -931,7 +931,7 @@ impl LoudsTrie {
 
         // Map and parse config flags
         let temp_config_flags: u32 = mapper.map_value()?;
-        self.config.parse(temp_config_flags as i32);
+        self.config.try_parse(temp_config_flags as i32)?;
 
         Ok(())
     }
@@ -1013,7 +1013,7 @@ impl LoudsTrie {
 
         // Read and parse config flags
         let temp_config_flags: u32 = reader.read()?;
-        self.config.parse(temp_config_flags as i32);
+        self.config.try_parse(temp_config_flags as i32)?;
 
         Ok(())
     }

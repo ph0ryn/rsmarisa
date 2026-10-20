@@ -3,7 +3,8 @@
 //! This test verifies that Rust-generated binary files are identical to
 //! C++-generated files when built from the same keyset.
 
-use rsmarisa::{Keyset, Trie};
+use rsmarisa::grimoire::io::Reader;
+use rsmarisa::{Agent, Keyset, Trie};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -122,4 +123,83 @@ fn find_cpp_test_binary() -> Option<PathBuf> {
     ];
 
     candidates.into_iter().find(|path| path.exists())
+}
+
+// Rust-specific: malformed serialized flags must be I/O errors, not panics,
+// and a failed replacement must leave the existing trie available.
+fn assert_invalid_configuration_rejected(
+    mut load: impl FnMut(&mut Trie, &[u8]) -> std::io::Result<()>,
+) {
+    let directory = TempDir::new().unwrap();
+    let valid_path = directory.path().join("valid.marisa");
+    let mut keys = Keyset::new();
+    keys.push_back_str("apple").unwrap();
+    keys.push_back_str("banana").unwrap();
+    let mut source = Trie::new();
+    source.build(&mut keys, 1);
+    source.save(valid_path.to_str().unwrap()).unwrap();
+    let valid = fs::read(valid_path).unwrap();
+    // The outer trie's configuration is the final serialized u32.
+    let offset = valid.len() - 4;
+    let flags = u32::from_le_bytes(valid[offset..].try_into().unwrap());
+    let invalid_flags = [
+        ("unknown flags", flags | 0x100000),
+        ("undefined cache level", (flags & !0x00F80) | 0x00900),
+        ("undefined tail mode", (flags & !0x0F000) | 0x0C000),
+        ("undefined node order", (flags & !0xF0000) | 0xC0000),
+        ("negative flags", u32::MAX),
+    ];
+
+    for (case, flags) in invalid_flags {
+        let mut bytes = valid.clone();
+        bytes[offset..].copy_from_slice(&flags.to_le_bytes());
+        let mut existing_keys = Keyset::new();
+        existing_keys.push_back_str("sentinel").unwrap();
+        let mut trie = Trie::new();
+        trie.build(&mut existing_keys, 1);
+
+        let error = load(&mut trie, &bytes).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{case}");
+        let mut agent = Agent::new();
+        agent.set_query_str("sentinel");
+        assert!(trie.lookup(&mut agent), "failed load replaced trie: {case}");
+    }
+}
+
+#[test]
+fn rejects_invalid_configuration_on_load() {
+    // Rust-specific: exercise the file-loading public boundary.
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("invalid.marisa");
+    assert_invalid_configuration_rejected(|trie, bytes| {
+        fs::write(&path, bytes)?;
+        trie.load(path.to_str().unwrap())
+    });
+}
+
+#[test]
+fn rejects_invalid_configuration_on_read() {
+    // Rust-specific: the same validation applies to caller-provided readers.
+    assert_invalid_configuration_rejected(|trie, bytes| trie.read(&mut Reader::from_bytes(bytes)));
+}
+
+#[test]
+fn rejects_invalid_configuration_on_map() {
+    // Rust-specific: Trie::map requires static backing storage, so each small
+    // malformed test buffer is retained until this test process exits.
+    assert_invalid_configuration_rejected(|trie, bytes| {
+        trie.map(Box::leak(bytes.to_vec().into_boxed_slice()))
+    });
+}
+
+#[test]
+#[cfg(feature = "mmap")]
+fn rejects_invalid_configuration_on_mmap() {
+    // Rust-specific: mapped-file loading must reject the flags as well.
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("invalid.marisa");
+    assert_invalid_configuration_rejected(|trie, bytes| {
+        fs::write(&path, bytes)?;
+        trie.mmap(path.to_str().unwrap())
+    });
 }

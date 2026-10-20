@@ -7,6 +7,7 @@
 //! the number of tries, cache size, tail storage mode, and node ordering.
 
 use crate::base::{CacheLevel, NodeOrder, NumTries, TailMode};
+use std::io;
 
 /// Configuration masks and constants.
 mod masks {
@@ -53,11 +54,18 @@ impl Config {
     ///
     /// # Panics
     ///
-    /// Panics if invalid flags are provided (TODO: should return Result)
+    /// Panics if invalid flags are provided.
     pub fn parse(&mut self, config_flags: i32) {
+        self.try_parse(config_flags)
+            .expect("Invalid configuration flags");
+    }
+
+    /// Parses serialized flags without panicking or changing the config on error.
+    pub(crate) fn try_parse(&mut self, config_flags: i32) -> io::Result<()> {
         let mut temp = Config::new();
-        temp.parse_internal(config_flags);
+        temp.parse_internal(config_flags)?;
         self.swap(&mut temp);
+        Ok(())
     }
 
     /// Returns the configuration as bit flags.
@@ -107,16 +115,19 @@ impl Config {
     }
 
     /// Internal parsing implementation.
-    fn parse_internal(&mut self, config_flags: i32) {
-        assert!(
-            (config_flags & !masks::CONFIG_MASK) == 0,
-            "Invalid configuration flags"
-        );
+    fn parse_internal(&mut self, config_flags: i32) -> io::Result<()> {
+        if (config_flags & !masks::CONFIG_MASK) != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid configuration flags",
+            ));
+        }
 
         self.parse_num_tries(config_flags);
-        self.parse_cache_level(config_flags);
-        self.parse_tail_mode(config_flags);
-        self.parse_node_order(config_flags);
+        self.parse_cache_level(config_flags)?;
+        self.parse_tail_mode(config_flags)?;
+        self.parse_node_order(config_flags)?;
+        Ok(())
     }
 
     /// Parses the number of tries from flags.
@@ -128,7 +139,7 @@ impl Config {
     }
 
     /// Parses the cache level from flags.
-    fn parse_cache_level(&mut self, config_flags: i32) {
+    fn parse_cache_level(&mut self, config_flags: i32) -> io::Result<()> {
         let cache_level_bits = config_flags & masks::CACHE_LEVEL_MASK;
 
         self.cache_level = match cache_level_bits {
@@ -138,32 +149,50 @@ impl Config {
             x if x == CacheLevel::Normal as i32 => CacheLevel::Normal,
             x if x == CacheLevel::Small as i32 => CacheLevel::Small,
             x if x == CacheLevel::Tiny as i32 => CacheLevel::Tiny,
-            _ => panic!("Undefined cache level"),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Undefined cache level",
+                ));
+            }
         };
+        Ok(())
     }
 
     /// Parses the tail mode from flags.
-    fn parse_tail_mode(&mut self, config_flags: i32) {
+    fn parse_tail_mode(&mut self, config_flags: i32) -> io::Result<()> {
         let tail_mode_bits = config_flags & masks::TAIL_MODE_MASK;
 
         self.tail_mode = match tail_mode_bits {
             0 => TailMode::default(),
             x if x == TailMode::TextTail as i32 => TailMode::TextTail,
             x if x == TailMode::BinaryTail as i32 => TailMode::BinaryTail,
-            _ => panic!("Undefined tail mode"),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Undefined tail mode",
+                ));
+            }
         };
+        Ok(())
     }
 
     /// Parses the node order from flags.
-    fn parse_node_order(&mut self, config_flags: i32) {
+    fn parse_node_order(&mut self, config_flags: i32) -> io::Result<()> {
         let node_order_bits = config_flags & masks::NODE_ORDER_MASK;
 
         self.node_order = match node_order_bits {
             0 => NodeOrder::default(),
             x if x == NodeOrder::Label as i32 => NodeOrder::Label,
             x if x == NodeOrder::Weight as i32 => NodeOrder::Weight,
-            _ => panic!("Undefined node order"),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Undefined node order",
+                ));
+            }
         };
+        Ok(())
     }
 }
 

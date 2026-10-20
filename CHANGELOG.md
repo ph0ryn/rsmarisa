@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Avoid integer underflow when matching valid TextTail prefixes in debug builds.
+- Return `InvalidData` instead of panicking on invalid serialized configuration,
+  preserving an existing trie when loading or mapping fails.
 - Fixed the bit-vector word size at 64 bits on every target instead of following
   the platform pointer width. The previous 32-bit code paths were incomplete
   (missing `select0`/`select1`) and would have produced an on-disk format
