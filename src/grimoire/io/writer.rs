@@ -7,6 +7,7 @@
 //! Writer provides methods to write binary data to various destinations
 //! including files, byte vectors, and any type implementing std::io::Write.
 
+use bytemuck::NoUninit;
 use std::fs::File;
 use std::io::{self, Write as IoWrite};
 use std::path::Path;
@@ -78,14 +79,19 @@ impl<'a> Writer<'a> {
     ///
     /// Returns an error if the writer is not open or if writing fails.
     ///
-    /// # Safety
+    /// Writes the native memory representation. `NoUninit` excludes padding
+    /// and other uninitialized bytes, while still allowing `bool` and `char`.
     ///
-    /// This function writes the raw bytes of T's memory representation.
-    /// It's safe for types like u32, u64, but the caller must ensure T
-    /// has a stable binary representation.
-    pub fn write<T>(&mut self, value: &T) -> io::Result<()> {
-        let size = std::mem::size_of::<T>();
-        let slice = unsafe { std::slice::from_raw_parts(value as *const T as *const u8, size) };
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Writer;
+    /// #[repr(C)]
+    /// #[derive(Clone, Copy)]
+    /// struct Padded { byte: u8, word: u32 }
+    /// let mut writer = Writer::from_vec(Vec::new());
+    /// writer.write(&Padded { byte: 1, word: 2 }).unwrap();
+    /// ```
+    pub fn write<T: NoUninit>(&mut self, value: &T) -> io::Result<()> {
+        let slice = bytemuck::bytes_of(value);
 
         if let Some(buffer) = &mut self.buffer {
             buffer.extend_from_slice(slice);
@@ -112,17 +118,22 @@ impl<'a> Writer<'a> {
     ///
     /// Returns an error if the writer is not open or if writing fails.
     ///
-    /// # Safety
+    /// `NoUninit` prevents reading uninitialized padding from any element.
     ///
-    /// This function writes the raw bytes of `T`'s memory representation.
-    /// The caller must ensure T has a stable binary representation.
-    pub fn write_slice<T>(&mut self, values: &[T]) -> io::Result<()> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Writer;
+    /// #[repr(C)]
+    /// #[derive(Clone, Copy)]
+    /// struct Padded { byte: u8, word: u32 }
+    /// let mut writer = Writer::from_vec(Vec::new());
+    /// writer.write_slice(&[Padded { byte: 1, word: 2 }]).unwrap();
+    /// ```
+    pub fn write_slice<T: NoUninit>(&mut self, values: &[T]) -> io::Result<()> {
         if values.is_empty() {
             return Ok(());
         }
 
-        let size = std::mem::size_of_val(values);
-        let slice = unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, size) };
+        let slice = bytemuck::cast_slice(values);
 
         if let Some(buffer) = &mut self.buffer {
             buffer.extend_from_slice(slice);

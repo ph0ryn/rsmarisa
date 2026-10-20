@@ -12,6 +12,7 @@
 /// It uses bit packing to store one absolute rank (32 bits) and 7 relative ranks
 /// (packed into two 32-bit values).
 #[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
 pub struct RankIndex {
     /// Absolute rank count (full 32 bits).
     abs: u32,
@@ -20,6 +21,16 @@ pub struct RankIndex {
     /// Higher relative ranks (rel5, rel6, rel7) bit-packed.
     rel_hi: u32,
 }
+
+const _: [(); 12] = [(); std::mem::size_of::<RankIndex>()];
+const _: [(); 4] = [(); std::mem::align_of::<RankIndex>()];
+
+// SAFETY: repr(C) stores three u32 fields in declaration order at offsets 0, 4,
+// and 8. Every field permits zero and every other bit pattern.
+unsafe impl bytemuck::Zeroable for RankIndex {}
+// SAFETY: The three four-byte fields fill the asserted twelve-byte layout, so
+// there is no padding. All fields are Pod, with no pointers/interior mutability.
+unsafe impl bytemuck::Pod for RankIndex {}
 
 impl RankIndex {
     /// Creates a new rank index with all values set to zero.

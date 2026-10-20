@@ -18,6 +18,16 @@ union LinkOrWeight {
     weight: f32,
 }
 
+const _: [(); 4] = [(); std::mem::size_of::<LinkOrWeight>()];
+const _: [(); 4] = [(); std::mem::align_of::<LinkOrWeight>()];
+
+// SAFETY: Both repr(C) union fields (u32 and f32) allow every bit pattern,
+// including zero. Both occupy all four bytes, with no padding or pointers.
+unsafe impl bytemuck::Zeroable for LinkOrWeight {}
+// SAFETY: The same layout proof gives initialized bytes for either active field;
+// the union is Copy, has no interior mutability, and accepts arbitrary bytes.
+unsafe impl bytemuck::Pod for LinkOrWeight {}
+
 impl Default for LinkOrWeight {
     fn default() -> Self {
         // Match C++ initialization: weight = FLT_MIN
@@ -48,6 +58,7 @@ impl std::fmt::Debug for LinkOrWeight {
 /// Cache holds parent and child node indices, along with either link
 /// information (base byte + extra data) or weight for sorting.
 #[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
 pub struct Cache {
     /// Parent node index.
     parent: u32,
@@ -56,6 +67,16 @@ pub struct Cache {
     /// Link data or weight.
     union: LinkOrWeight,
 }
+
+const _: [(); 12] = [(); std::mem::size_of::<Cache>()];
+const _: [(); 4] = [(); std::mem::align_of::<Cache>()];
+
+// SAFETY: repr(C) places parent, child, and the four-byte union at offsets
+// 0, 4, and 8. Each field allows every bit pattern, including zero.
+unsafe impl bytemuck::Zeroable for Cache {}
+// SAFETY: The three four-byte fields fill the asserted twelve-byte layout with
+// no padding. Each field is Pod, with no pointers or interior mutability.
+unsafe impl bytemuck::Pod for Cache {}
 
 impl Cache {
     /// Creates a new cache with default values.

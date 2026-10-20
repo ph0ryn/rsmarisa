@@ -31,6 +31,8 @@ default = ["mmap"]
 mmap = ["dep:memmap2"]
 
 [dependencies]
+# Checked byte views for native-format trie I/O; no optional features are needed.
+bytemuck = { version = "1.25.2", default-features = false }
 # Required for CLI tools (rsmarisa-*)
 clap = { version = "4.5", features = ["derive"] }
 # Memory-mapped file I/O (gated behind the `mmap` feature; native only)

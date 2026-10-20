@@ -24,6 +24,7 @@
 //!
 //! See also: [WAMR host data sharing](https://bytecodealliance.github.io/wamr.dev/blog/the-wasm-host-sharing-data-basics/)
 
+use bytemuck::Pod;
 #[cfg(feature = "mmap")]
 use memmap2::Mmap;
 use std::io;
@@ -161,11 +162,15 @@ impl Mapper {
     ///
     /// Returns an error if the mapper is not open or if there's insufficient data.
     ///
-    /// # Safety
+    /// `Pod` ensures that arbitrary input bytes form a valid value without
+    /// padding or pointer invariants.
     ///
-    /// This function reads raw bytes into the memory representation of T.
-    /// The caller must ensure T is safe to initialize from arbitrary bytes.
-    pub fn map<T: Copy>(&mut self, value: &mut T) -> io::Result<()> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Mapper;
+    /// let mut mapper = Mapper::open_memory(&[2]);
+    /// mapper.map(&mut false).unwrap();
+    /// ```
+    pub fn map<T: Pod>(&mut self, value: &mut T) -> io::Result<()> {
         let data = self.data();
         if data.is_empty() {
             return Err(io::Error::new(
@@ -175,7 +180,7 @@ impl Mapper {
         }
 
         let size = std::mem::size_of::<T>();
-        if self.position + size > data.len() {
+        if size > data.len() - self.position {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "Insufficient data to map",
@@ -183,9 +188,7 @@ impl Mapper {
         }
 
         let slice = &data[self.position..self.position + size];
-        unsafe {
-            std::ptr::copy_nonoverlapping(slice.as_ptr(), value as *mut T as *mut u8, size);
-        }
+        bytemuck::bytes_of_mut(value).copy_from_slice(slice);
 
         self.position += size;
         Ok(())
@@ -199,11 +202,15 @@ impl Mapper {
     ///
     /// Returns an error if the mapper is not open or if there's insufficient data.
     ///
-    /// # Safety
+    /// Only types with an arbitrary-bit-valid, padding-free representation
+    /// implement `Pod`.
     ///
-    /// This function reads raw bytes into the memory representation of T.
-    /// The caller must ensure T is safe to initialize from arbitrary bytes.
-    pub fn map_value<T: Copy + Default>(&mut self) -> io::Result<T> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Mapper;
+    /// let mut mapper = Mapper::open_memory(&[2]);
+    /// let _: bool = mapper.map_value().unwrap();
+    /// ```
+    pub fn map_value<T: Pod + Default>(&mut self) -> io::Result<T> {
         let mut value = T::default();
         self.map(&mut value)?;
         Ok(value)
@@ -219,11 +226,14 @@ impl Mapper {
     ///
     /// Returns an error if the mapper is not open or if there's insufficient data.
     ///
-    /// # Safety
+    /// `Pod` ensures every copied byte pattern is valid for each element.
     ///
-    /// This function reads raw bytes into the memory representation of `T`.
-    /// The caller must ensure T is safe to initialize from arbitrary bytes.
-    pub fn map_slice<T: Copy>(&mut self, values: &mut [T]) -> io::Result<()> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Mapper;
+    /// let mut mapper = Mapper::open_memory(&[2]);
+    /// mapper.map_slice(&mut [false]).unwrap();
+    /// ```
+    pub fn map_slice<T: Pod>(&mut self, values: &mut [T]) -> io::Result<()> {
         if values.is_empty() {
             return Ok(());
         }
@@ -237,7 +247,7 @@ impl Mapper {
         }
 
         let size = std::mem::size_of_val(values);
-        if self.position + size > data.len() {
+        if size > data.len() - self.position {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "Insufficient data to map",
@@ -245,9 +255,7 @@ impl Mapper {
         }
 
         let slice = &data[self.position..self.position + size];
-        unsafe {
-            std::ptr::copy_nonoverlapping(slice.as_ptr(), values.as_mut_ptr() as *mut u8, size);
-        }
+        bytemuck::cast_slice_mut(values).copy_from_slice(slice);
 
         self.position += size;
         Ok(())
@@ -271,7 +279,7 @@ impl Mapper {
             ));
         }
 
-        if self.position + size > data.len() {
+        if size > data.len() - self.position {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "Seek past end of data",

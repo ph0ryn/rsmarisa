@@ -6,12 +6,13 @@
 //! serialization and memory mapping operations.
 
 use crate::grimoire::io::{Mapper, Reader, Writer};
+use bytemuck::{NoUninit, Pod};
 
 /// Generic vector for internal use with serialization support.
 ///
 /// This vector is similar to std::Vec but with additional features
-/// for memory mapping and serialization. It uses Copy/Clone trait
-/// bounds to ensure safe serialization.
+/// for memory mapping and serialization. Collection operations require `Copy`;
+/// binary I/O additionally requires an audited byte-representation contract.
 pub struct Vector<T: Copy> {
     data: Vec<T>,
     fixed: bool,
@@ -189,31 +190,20 @@ impl<T: Copy> Vector<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if mapping fails.
-    pub fn map(&mut self, mapper: &mut Mapper) -> std::io::Result<()> {
-        // Read the total size (u64)
+    /// Returns an error if mapping fails or the byte length is invalid for T.
+    ///
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::{io::Mapper, vector::vector::Vector};
+    /// let mut vector = Vector::<bool>::new();
+    /// vector.map(&mut Mapper::open_memory(&[0; 8])).unwrap();
+    /// ```
+    pub fn map(&mut self, mapper: &mut Mapper) -> std::io::Result<()>
+    where
+        T: Pod,
+    {
         let total_size: u64 = mapper.map_value()?;
-
-        // Calculate number of elements
-        let elem_size = std::mem::size_of::<T>();
-        if elem_size == 0 {
-            self.fixed = true;
-            return Ok(()); // Zero-sized types
-        }
-
-        let num_elements = (total_size as usize) / elem_size;
-
-        // Allocate and map elements
-        self.data.clear();
-        self.data.reserve(num_elements);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            self.data.set_len(num_elements);
-        }
-
-        if num_elements > 0 {
-            mapper.map_slice(&mut self.data[..])?;
-        }
+        self.resize_for_io(total_size)?;
+        mapper.map_slice(&mut self.data)?;
 
         // Skip alignment padding
         let padding = ((8 - (total_size % 8)) % 8) as usize;
@@ -233,30 +223,20 @@ impl<T: Copy> Vector<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if reading fails.
-    pub fn read(&mut self, reader: &mut Reader<'_>) -> std::io::Result<()> {
-        // Read the total size (u64)
+    /// Returns an error if reading fails or the byte length is invalid for T.
+    ///
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::{io::Reader, vector::vector::Vector};
+    /// let mut vector = Vector::<bool>::new();
+    /// vector.read(&mut Reader::from_bytes(&[0; 8])).unwrap();
+    /// ```
+    pub fn read(&mut self, reader: &mut Reader<'_>) -> std::io::Result<()>
+    where
+        T: Pod,
+    {
         let total_size: u64 = reader.read()?;
-
-        // Calculate number of elements
-        let elem_size = std::mem::size_of::<T>();
-        if elem_size == 0 {
-            return Ok(()); // Zero-sized types
-        }
-
-        let size = (total_size as usize) / elem_size;
-
-        // Allocate and read elements
-        self.data.clear();
-        self.data.reserve(size);
-        #[allow(clippy::uninit_vec)]
-        unsafe {
-            self.data.set_len(size);
-        }
-
-        if size > 0 {
-            reader.read_slice(&mut self.data[..])?;
-        }
+        self.resize_for_io(total_size)?;
+        reader.read_slice(&mut self.data)?;
 
         // Skip alignment padding
         let padding = ((8 - (total_size % 8)) % 8) as usize;
@@ -281,7 +261,19 @@ impl<T: Copy> Vector<T> {
     /// # Errors
     ///
     /// Returns an error if writing fails.
-    pub fn write(&self, writer: &mut Writer<'_>) -> std::io::Result<()> {
+    ///
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::{io::Writer, vector::vector::Vector};
+    /// #[repr(C)]
+    /// #[derive(Clone, Copy)]
+    /// struct Padded { byte: u8, word: u32 }
+    /// let vector = Vector::<Padded>::new();
+    /// vector.write(&mut Writer::from_vec(Vec::new())).unwrap();
+    /// ```
+    pub fn write(&self, writer: &mut Writer<'_>) -> std::io::Result<()>
+    where
+        T: NoUninit,
+    {
         // Write total size as u64
         let total = self.total_size() as u64;
         writer.write(&total)?;
@@ -297,6 +289,43 @@ impl<T: Copy> Vector<T> {
             writer.seek(padding)?;
         }
 
+        Ok(())
+    }
+}
+
+impl<T: Pod> Vector<T> {
+    /// Validates the serialized byte count and initializes every destination.
+    fn resize_for_io(&mut self, total_size: u64) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind};
+
+        let total_size = usize::try_from(total_size)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Vector byte length exceeds usize"))?;
+        let element_size = std::mem::size_of::<T>();
+        let count = if element_size == 0 {
+            if total_size != 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "Nonzero byte length for zero-sized elements",
+                ));
+            }
+            0
+        } else {
+            if total_size % element_size != 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "Vector byte length is not a multiple of element size",
+                ));
+            }
+            total_size / element_size
+        };
+
+        self.data.clear();
+        self.data
+            .try_reserve(count)
+            .map_err(|error| Error::new(ErrorKind::InvalidData, error))?;
+        // Pod makes zero a valid value. Safe Read may inspect every byte, and
+        // partial failure must leave every element initialized and valid.
+        self.data.resize(count, T::zeroed());
         Ok(())
     }
 }

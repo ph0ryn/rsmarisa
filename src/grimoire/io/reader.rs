@@ -7,6 +7,7 @@
 //! Reader provides methods to read binary data from various sources
 //! including files, byte slices, and any type implementing std::io::Read.
 
+use bytemuck::Pod;
 use std::fs::File;
 use std::io::{self, Read as IoRead};
 use std::path::Path;
@@ -70,24 +71,32 @@ impl<'a> Reader<'a> {
     ///
     /// Returns an error if the reader is not open or if reading fails.
     ///
-    /// # Safety
+    /// Reads the native memory representation. `Pod` excludes invalid bit
+    /// patterns and padding, unlike `Copy` alone.
     ///
-    /// This function reads raw bytes into the memory representation of T.
-    /// It's safe for types like u32, u64, but the caller must ensure T
-    /// is safe to initialize from arbitrary bytes (e.g., Copy types with
-    /// no invalid bit patterns).
-    pub fn read<T: Copy>(&mut self) -> io::Result<T> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Reader;
+    /// let mut reader = Reader::from_bytes(&[2]);
+    /// let _: bool = reader.read().unwrap();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Reader;
+    /// #[repr(u8)]
+    /// #[derive(Clone, Copy)]
+    /// enum Flag { Off = 0, On = 1 }
+    /// let mut reader = Reader::from_bytes(&[2]);
+    /// let _: Flag = reader.read().unwrap();
+    /// ```
+    pub fn read<T: Pod>(&mut self) -> io::Result<T> {
         let reader = self
             .reader
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Reader not open"))?;
 
-        let size = std::mem::size_of::<T>();
-        let mut value = unsafe { std::mem::zeroed::<T>() };
-        let slice =
-            unsafe { std::slice::from_raw_parts_mut(&mut value as *mut T as *mut u8, size) };
-
-        reader.read_exact(slice)?;
+        // Safe Read implementations may inspect the entire destination buffer.
+        let mut value = T::zeroed();
+        reader.read_exact(bytemuck::bytes_of_mut(&mut value))?;
         Ok(value)
     }
 
@@ -101,21 +110,20 @@ impl<'a> Reader<'a> {
     ///
     /// Returns an error if the reader is not open or if reading fails.
     ///
-    /// # Safety
+    /// `Pod` keeps the destination valid even if a partial read fails.
     ///
-    /// This function reads raw bytes into the memory representation of T.
-    /// It's safe for types like u32, u64, but the caller must ensure T
-    /// is safe to initialize from arbitrary bytes.
-    pub fn read_into<T>(&mut self, value: &mut T) -> io::Result<()> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Reader;
+    /// let mut reader = Reader::from_bytes(&[2]);
+    /// reader.read_into(&mut false).unwrap();
+    /// ```
+    pub fn read_into<T: Pod>(&mut self, value: &mut T) -> io::Result<()> {
         let reader = self
             .reader
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Reader not open"))?;
 
-        let size = std::mem::size_of::<T>();
-        let slice = unsafe { std::slice::from_raw_parts_mut(value as *mut T as *mut u8, size) };
-
-        reader.read_exact(slice)?;
+        reader.read_exact(bytemuck::bytes_of_mut(value))?;
         Ok(())
     }
 
@@ -129,11 +137,15 @@ impl<'a> Reader<'a> {
     ///
     /// Returns an error if the reader is not open or if reading fails.
     ///
-    /// # Safety
+    /// Elements must be initialized before this call; `Pod` ensures arbitrary
+    /// input bytes cannot invalidate them, including on partial failure.
     ///
-    /// This function reads raw bytes into the memory representation of `T`.
-    /// The caller must ensure T is safe to initialize from arbitrary bytes.
-    pub fn read_slice<T>(&mut self, values: &mut [T]) -> io::Result<()> {
+    /// ```compile_fail
+    /// use rsmarisa::grimoire::io::Reader;
+    /// let mut reader = Reader::from_bytes(&[2]);
+    /// reader.read_slice(&mut [false]).unwrap();
+    /// ```
+    pub fn read_slice<T: Pod>(&mut self, values: &mut [T]) -> io::Result<()> {
         if values.is_empty() {
             return Ok(());
         }
@@ -143,10 +155,7 @@ impl<'a> Reader<'a> {
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Reader not open"))?;
 
-        let size = std::mem::size_of_val(values);
-        let slice = unsafe { std::slice::from_raw_parts_mut(values.as_mut_ptr() as *mut u8, size) };
-
-        reader.read_exact(slice)?;
+        reader.read_exact(bytemuck::cast_slice_mut(values))?;
         Ok(())
     }
 
