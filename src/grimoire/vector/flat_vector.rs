@@ -68,10 +68,10 @@ impl FlatVector {
     ///
     /// # Panics
     ///
-    /// Panics if i >= size()
+    /// Panics in all builds if `i >= size()`.
     #[inline]
     pub fn get(&self, i: usize) -> u32 {
-        debug_assert!(i < self.size, "Index out of bounds");
+        assert!(i < self.size, "Index out of bounds");
 
         let pos = i * self.value_size;
         let unit_id = pos / WORD_SIZE;

@@ -74,16 +74,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run debug library and regression tests
-        run: cargo test --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
+        run: cargo test --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test --test vector_panic_contract_test
 
-      - name: Run release regression tests
-        run: cargo test --release --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
+      - name: Run release library and regression tests
+        run: cargo test --release --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test --test vector_panic_contract_test
 
       - name: Run debug library and regression tests without mmap
-        run: cargo test --no-default-features --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
+        run: cargo test --no-default-features --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test --test vector_panic_contract_test
 
-      - name: Run release regression tests without mmap
-        run: cargo test --release --no-default-features --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
+      - name: Run release library and regression tests without mmap
+        run: cargo test --release --no-default-features --lib --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test --test vector_panic_contract_test
 
       - name: Check unsafe mmap API contracts
         run: cargo test --doc
