@@ -12,11 +12,12 @@ Pure Rust port of [marisa-trie](https://github.com/s-yata/marisa-trie), a static
 MARISA (Matching Algorithm with Recursively Implemented StorAge) is a static and space-efficient trie data structure. This is a **pure Rust** implementation (no C++ dependencies) that maintains full binary compatibility with the original C++ marisa-trie while leveraging Rust's safety features.
 
 **Why rsmarisa?**
+
 - Pure Rust implementation - no C++ dependencies or FFI overhead
 - Binary compatible with C++ marisa-trie (can read/write the same files)
 - Memory safe with comprehensive test coverage (321 tests)
 - Identical behavior to the original C++ library
-- Memory-mapped I/O support for efficient loading of large dictionaries
+- File-backed memory mapping and static-memory loading support
 
 ## Features
 
@@ -26,7 +27,7 @@ MARISA (Matching Algorithm with Recursively Implemented StorAge) is a static and
 - **Predictive search**: Find keys starting with a given string
 - **Space-efficient**: Compressed trie structure with LOUDS encoding
 - **Binary I/O**: Save and load tries to/from files
-- **Memory-mapped I/O**: Efficient loading with zero-copy memory mapping
+- **Memory-mapped I/O**: File-backed mapping with an explicit unsafe caller contract
 - **Full binary compatibility**: Rust-built tries are byte-for-byte identical to C++-built tries
 
 ## Quick Start
@@ -87,27 +88,41 @@ loaded_trie.load("dictionary.marisa").unwrap();
 
 ### Memory-Mapped I/O
 
-For efficient loading of large dictionaries (instant startup, zero-copy):
+File-backed mapping requires the default-on `mmap` feature and an unsafe call.
+The caller must prevent every process from modifying or truncating the backing
+file from before the call until the mapping is actually dropped. This includes
+opening, mapping, and parsing the file. Moving or swapping the owning trie
+transfers this obligation; read-only file access alone does not enforce it.
+
+Only use the file-backed example below when your application's storage policy
+provides that guarantee. Otherwise, use safe `load()` instead.
 
 ```rust
 use rsmarisa::Trie;
 
-// Memory-map from file (recommended for large dictionaries)
-let mut trie = Trie::new();
-trie.mmap("dictionary.marisa").unwrap();
+let mut mapped_trie = Trie::new();
+// SAFETY: The application's storage policy prevents any process from modifying
+// or truncating this file from before this call until the mapping is dropped,
+// including after any move or swap of mapped_trie.
+unsafe { mapped_trie.mmap("dictionary.marisa") }.unwrap();
 
-// Or embed dictionary data in the binary
+// Embedding static data does not require unsafe.
 static DICT_DATA: &[u8] = include_bytes!("dictionary.marisa");
-let mut trie = Trie::new();
-trie.map(DICT_DATA).unwrap();
+let mut embedded_trie = Trie::new();
+embedded_trie.map(DICT_DATA).unwrap();
 ```
 
-**When to use `mmap()` vs `load()`:**
-- **Large dictionaries (>100MB)**: Use `mmap()` for O(1) startup time
-- **Small dictionaries (<1MB)**: Use `load()` for simplicity
-- **Embedded data**: Use `map()` with `include_bytes!()`
+**When to use `mmap()`, `load()`, or `map()`:**
 
-Both methods produce identical behavior and support the same operations.
+- **Ordinary file input**: Use safe `load()` without a mapping-lifetime guarantee.
+- **Controlled immutable files**: Consider unsafe `mmap()` only when you can
+  maintain the backing-file guarantee until the mapping is actually dropped.
+- **Embedded data**: Use safe `map()` with `include_bytes!()`.
+
+These methods use the same dictionary format and support the same search
+operations. The current `map()`/`mmap()` implementation copies payloads into owned
+vectors: trie loading is not zero-copy or O(1), and the file mapping remains
+retained by its owner even after the copies finish.
 
 ## Examples
 
@@ -126,12 +141,14 @@ cargo run --example save_load
 ✅ **Production ready!** Core functionality is complete with full binary compatibility and all CLI tools working.
 
 **Latest Updates (v0.2.0 - 2026-01-27):**
-- ✅ **Memory-mapped I/O**: Added `Trie::mmap()` for efficient zero-copy loading of large dictionaries
-- ✅ **Instant startup**: O(1) load time for large dictionaries using memory mapping
+
+- ✅ **Memory-mapped I/O**: Added file-backed `Trie::mmap()` loading; calls now require an explicit unsafe contract
+- ✅ **Owned payloads**: The mapping path copies into owned vectors rather than providing zero-copy or O(1) loading
 - ✅ **Static memory support**: `Trie::map()` for embedding dictionary data in binaries
 - ✅ **Binary compatibility**: Both `mmap()` and `load()` work with C++-created files
 
 **Upcoming in v0.3.0 (Breaking Change):**
+
 - 🔄 **Library name alignment**: The library name has been changed from `marisa` to `rsmarisa` to match the package name
   - **Migration required**: Update all imports from `use marisa::` to `use rsmarisa::`
   - **Why**: Eliminates confusion and aligns with Rust naming conventions
@@ -145,7 +162,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - ✅ **Lookup operations** - Exact string matching
 - ✅ **Common prefix search** - Find all prefixes of a string
 - ✅ **Binary I/O** - Save/load with C++ marisa-trie compatibility
-- ✅ **Memory-mapped I/O** - Efficient zero-copy loading
+- ✅ **Memory-mapped I/O** - File-backed loading with owned payload copies
 - ✅ **File format validation** - "We love Marisa." header check
 - ✅ **321 comprehensive tests** - All passing ✅
 
@@ -178,6 +195,7 @@ cargo test test_trie_lookup
 Command-line tools with `rsmarisa-` prefix (to avoid conflicts with C++ marisa-trie):
 
 **Available:**
+
 - ✅ `rsmarisa-build` - Build a dictionary from text input (binary compatible with C++)
 - ✅ `rsmarisa-lookup` - Look up keys in a dictionary (results match C++ exactly)
 - ✅ `rsmarisa-common-prefix-search` - Find keys that are prefixes of queries (results match C++ exactly)
@@ -186,6 +204,7 @@ Command-line tools with `rsmarisa-` prefix (to avoid conflicts with C++ marisa-t
 - ✅ `rsmarisa-reverse-lookup` - Restore keys from IDs (results match C++ exactly)
 
 **Coming Soon:**
+
 - `rsmarisa-benchmark` - Performance benchmarking
 
 All CLI tools are now fully functional and produce output identical to their C++ counterparts.
@@ -212,6 +231,7 @@ echo "application" | cargo run --release --bin rsmarisa-common-prefix-search -- 
 ## Performance
 
 MARISA tries are designed to be:
+
 - **Space-efficient**: Uses LOUDS encoding and suffix compression
 - **Fast lookups**: O(m) where m is the query length
 - **Cache-friendly**: Sequential memory access patterns
@@ -220,7 +240,7 @@ See [PORTING_STATUS.md](PORTING_STATUS.md) for detailed implementation progress.
 
 ## Original Project
 
-- **Repository**: https://github.com/s-yata/marisa-trie
+- **Repository**: <https://github.com/s-yata/marisa-trie>
 - **Author**: Susumu Yata
 - **Version**: 0.3.1
 - **Baseline commit**: `4ef33cc5a2b6b4f5e147e4564a5236e163d67982`

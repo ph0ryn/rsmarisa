@@ -193,8 +193,12 @@ Keep these bounds on I/O methods, not on collection-only `Vector` operations.
   `Read` implementations, which may inspect the entire buffer or fail midway.
 - Every local unsafe byte-representation impl needs a stable-layout,
   no-padding, and valid-bit-pattern proof. Preserve C++ field order and sizes.
-- File-backed mmap still has its separate existing external modification and
-  truncation contract; owned `load`/`read` tests do not establish mmap soundness.
+- File-backed `Mapper::open_file`, `LoudsTrie::mmap`, and `Trie::mmap` are unsafe.
+  The caller must prevent backing-file modification or truncation from before
+  the call until the mapping is dropped, including after its owner is moved or
+  swapped. Read-only file access does not enforce this guarantee.
+  Owned `load`/`read` tests do not establish
+  mmap soundness; static-memory `open_memory`/`map` remain safe.
 
 The I/O suite creates temporary files. Permit filesystem access without
 turning off undefined-behavior checks:
@@ -471,7 +475,10 @@ The tagpr configuration is in `.tagpr`:
 
 ### Overview
 
-rust-marisa now supports true memory-mapped file I/O using the `memmap2` crate. This provides efficient loading of large dictionaries without copying data into memory.
+rust-marisa supports file-backed memory mapping using the `memmap2` crate.
+The current deserialization path copies mapped payloads into owned vectors, so
+trie loading is not zero-copy and does not have O(1) startup time. File-backed
+mapping still requires an unsafe caller guarantee against external changes.
 
 ### Architecture
 
@@ -490,74 +497,92 @@ pub struct Mapper {
 }
 ```
 
-**Critical: Drop order safety**: The `mapper` field in `LoudsTrie` is placed LAST in the struct declaration. Rust drops fields in declaration order (top to bottom), so this ensures all data structures referencing mmap'd memory are dropped before the `Mapper` itself, preventing dangling pointers.
+**Mapping ownership**: `LoudsTrie` retains its `Mapper` as its final field.
+Its current vectors own copied payloads, rather than borrowing mapped storage.
+The backing-file guarantee starts before the unsafe call and lasts until the
+retained mapping is actually released, not just until copying finishes or a
+`File` handle closes. Moving or swapping the owner transfers that obligation.
+Do not assume a subsequent `LoudsTrie::read` or `map` releases an old mapping;
+those methods can leave its mapper retained.
 
 ### Public API
 
+File-backed mapping requires the default-on `mmap` feature. The example assumes
+an application storage policy that prevents backing-file changes by every
+process for the full mapping lifetime. If that guarantee is unavailable, use
+safe `load()` instead.
+
 ```rust
-// File-backed memory mapping (recommended for large dictionaries)
-let mut trie = Trie::new();
-trie.mmap("dictionary.marisa")?;
+use rsmarisa::Trie;
 
-// Static memory mapping (for embedded data)
+let mut mapped_trie = Trie::new();
+// SAFETY: The application's storage policy prevents any process from modifying
+// or truncating this file from before this call until the mapping is dropped,
+// including after any move or swap of mapped_trie.
+unsafe { mapped_trie.mmap("dictionary.marisa") }?;
+
+// Static-memory mapping is safe.
 static DATA: &[u8] = include_bytes!("dictionary.marisa");
-let mut trie = Trie::new();
-trie.map(DATA)?;
+let mut embedded_trie = Trie::new();
+embedded_trie.map(DATA)?;
 
-// Traditional read (still supported)
-let mut trie = Trie::new();
-trie.load("dictionary.marisa")?;
+// Owned file loading is also safe and needs no mapping-lifetime guarantee.
+let mut loaded_trie = Trie::new();
+loaded_trie.load("dictionary.marisa")?;
 ```
 
 ### Implementation Details
 
-All vector types now support both `read()` and `map()` operations:
+All vector types support both `read()` and `map()` operations:
 
-- `Vector<T>::map()` - Generic vector mapping
-- `BitVector::map()` - Bit vector with rank/select indices
-- `FlatVector::map()` - Flat vector for packed integers
-- `Tail::map()` - Tail storage for suffixes
+- `Vector<T>::map()` - Copies mapped payloads into owned generic vector storage
+- `BitVector::map()` - Loads a bit vector with rank/select indices
+- `FlatVector::map()` - Loads a flat vector for packed integers
+- `Tail::map()` - Loads tail storage for suffixes
 
 The binary format is identical between `read()` and `map()`, ensuring:
 
 - Files created by Rust can be loaded by C++ (via both methods)
 - Files created by C++ can be loaded by Rust (via both methods)
-- `load()` and `mmap()` produce identical behavior
+- `load()` and `mmap()` produce the same search results
 
 ### Safety Considerations
 
-**Memory mapping safety**: The `unsafe` block in `Mapper::open_file()` is required because:
+`Mapper::open_file`, `LoudsTrie::mmap`, and `Trie::mmap` are unsafe public
+boundaries. The caller must prevent modification or truncation of the backing
+file from before the call until the mapping is dropped, including after a move
+or swap. The guarantee covers opening, mapping, and parsing. Opening a file
+read-only and using a read-only mapping do not prevent other writers.
+Copying payloads does not make this contract unnecessary: external changes can
+invalidate mapped reads during copying, and the mapping remains retained.
 
-- File could be modified externally while mapped
-- File could be truncated while mapped
-
-**Mitigations**:
-
-- Files are opened read-only (PROT_READ)
-- Documentation warns users not to modify files while mapped
-- Matches C++ behavior exactly
+`Mapper::open_file` is also unsafe without the `mmap` feature for a consistent
+signature; that stub returns `Unsupported` and imposes no operational
+preconditions. Owned `load`/`read` and static-memory `open_memory`/`map` stay safe.
 
 ### Testing
 
-Added comprehensive tests:
-
-- `test_trie_mmap` - Basic mmap functionality
-- `test_trie_mmap_vs_load_equivalence` - Verify identical behavior with load()
+- Compile-fail doctests require unsafe calls at all three file-backed entrypoints,
+  including `Mapper::open_file` without the `mmap` feature.
+- `test_trie_mmap` - Basic mmap functionality with a private, unchanged test file
+- `test_trie_mmap_vs_load_equivalence` - Verify identical behavior with `load()`
 - `test_trie_mmap_file_not_found` - Error handling
 - Integration test with C++-created dictionaries
+- Malformed configuration tests rewrite their private file only after the failed
+  mapping has been dropped.
+- Miri ownership and owned-I/O tests do not validate file-backed mapping safety;
+  do not attempt a native truncation-based undefined-behavior reproduction.
 
 ### Performance Characteristics
 
-**Large dictionaries (>100MB)**:
-
-- Load time: O(1) instant startup vs O(n) read/parse
-- Memory: OS page cache (shared) vs heap allocation
-- First access: Slower (page fault) then fast
-
-**Small dictionaries (<1MB)**:
-
-- Minimal benefit, setup overhead may dominate
-- Use `load()` for simplicity
+- The current mapping path allocates owned vectors and copies their payloads;
+  dictionary loading includes work proportional to the serialized payload size,
+  not O(1) startup.
+- A file mapping is retained alongside the owned payload allocations. This is
+  not an OS-page-cache-only or zero-copy trie representation.
+- Use safe `load()` for simplicity. Measure a representative workload before
+  choosing `mmap()` for performance, and only use it when its safety contract can
+  be maintained.
 
 ## Key Lessons Learned
 
