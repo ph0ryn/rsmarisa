@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wait for CLI test subprocesses to finish and check their exit status before
+  comparing dictionary files or search output, replacing timing-based sleeps.
 - Initialize vector payloads before passing them to safe readers, including
   partial and failed reads.
 - Keep query and key bytes valid after input mutation, cloning, owner reset,
