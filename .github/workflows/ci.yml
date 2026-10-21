@@ -85,6 +85,12 @@ jobs:
       - name: Run release regression tests without mmap
         run: cargo test --release --no-default-features --test basic_lookup_test --test binary_compat_test --test io_safety_test --test ownership_safety_test
 
+      - name: Check unsafe mmap API contracts
+        run: cargo test --doc
+
+      - name: Check API contracts without mmap
+        run: cargo test --no-default-features --doc
+
   safety-miri:
     name: Safety regressions (Miri)
     runs-on: ubuntu-latest
