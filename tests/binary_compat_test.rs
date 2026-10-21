@@ -200,6 +200,11 @@ fn rejects_invalid_configuration_on_mmap() {
     let path = directory.path().join("invalid.marisa");
     assert_invalid_configuration_rejected(|trie, bytes| {
         fs::write(&path, bytes)?;
-        trie.mmap(path.to_str().unwrap())
+        // SAFETY: This test owns the private temporary file and starts no writers
+        // from before this call until its mapping is dropped. Invalid flags make
+        // the call fail and drop its temporary mapping before returning, so the
+        // next iteration's write cannot modify a live mapping. The existing trie
+        // is built, not mapped.
+        unsafe { trie.mmap(path.to_str().unwrap()) }
     });
 }

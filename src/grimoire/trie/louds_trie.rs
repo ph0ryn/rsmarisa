@@ -44,15 +44,10 @@ pub struct LoudsTrie {
     num_l1_nodes: usize,
     /// Configuration.
     config: Config,
-    /// Mapper for memory-mapped access.
-    /// IMPORTANT: This field MUST be last in struct declaration.
-    /// Rust drops fields in declaration order (top to bottom), so placing
-    /// this last ensures all data structures are dropped before the Mapper,
-    /// preventing dangling references to mmap'd memory.
-    ///
-    /// Only file-backed `mmap()` needs to keep the Mapper alive, so this field
-    /// exists only with the `mmap` feature. `map()` borrows `&'static` data
-    /// that outlives the trie regardless.
+    /// Retained file-backed mapping. Its file-stability obligation lasts until
+    /// the mapping is dropped, including after this trie is moved or swapped.
+    /// Vector mapping currently copies into owned storage, not borrowed views.
+    /// Static-memory `map()` creates no file mapping and can leave this one retained.
     #[cfg(feature = "mmap")]
     mapper: Option<Mapper>,
 }
@@ -872,14 +867,32 @@ impl LoudsTrie {
     ///
     /// Returns an error if the file cannot be opened/mapped or data is invalid.
     ///
+    /// # Safety
+    ///
+    /// You must ensure that the backing file is not modified or truncated by
+    /// any handle or process, from before this call until the mapping is dropped.
+    /// This obligation follows the mapping if this trie is moved or swapped
+    /// into another owner. Opening the file read-only does not guarantee this.
+    /// Use [`Self::read`] with a [`Reader`] if you cannot guarantee file stability.
+    ///
+    /// File-backed mapping requires an explicit unsafe call:
+    ///
+    /// ```compile_fail,E0133
+    /// use rsmarisa::grimoire::trie::louds_trie::LoudsTrie;
+    /// let mut trie = LoudsTrie::new();
+    /// let _ = trie.mmap("dictionary.marisa");
+    /// ```
+    ///
     /// Requires the `mmap` feature (enabled by default; unavailable on WASM).
     #[cfg(feature = "mmap")]
-    pub fn mmap(&mut self, filename: &str) -> std::io::Result<()> {
-        let mut mapper = Mapper::open_file(filename)?;
+    pub unsafe fn mmap(&mut self, filename: &str) -> std::io::Result<()> {
+        // SAFETY: The caller guarantees file stability from before this call
+        // until the retained mapping is dropped, including after moves/swaps.
+        let mut mapper = unsafe { Mapper::open_file(filename)? };
         use crate::grimoire::trie::header::Header;
         Header::new().map(&mut mapper)?;
         self.map_internal(&mut mapper)?;
-        // CRITICAL: Keep mapper alive to keep mmap'd memory valid
+        // Retaining the mapping also retains the caller's file-stability obligation.
         self.mapper = Some(mapper);
         Ok(())
     }

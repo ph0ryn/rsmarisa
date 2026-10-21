@@ -80,9 +80,9 @@ impl Trie {
 
     /// Memory-maps a trie from a file.
     ///
-    /// This method uses memory-mapped I/O for efficient loading of large tries.
-    /// The file is mapped into memory, and the trie data structures reference
-    /// the mapped memory directly, avoiding the need to copy data.
+    /// This method reads through a retained file mapping. The current vector
+    /// implementation copies decoded data into owned storage; this is not
+    /// zero-copy loading. Use [`Self::load`] for safe owned file loading.
     ///
     /// # Arguments
     ///
@@ -92,20 +92,40 @@ impl Trie {
     ///
     /// Returns an error if the file cannot be opened/mapped or contains invalid data.
     ///
+    /// # Safety
+    ///
+    /// You must ensure that the backing file is not modified or truncated by
+    /// any handle or process, from before this call until the mapping is dropped.
+    /// This obligation follows the mapping if this trie is moved or swapped
+    /// into another owner. Opening the file read-only does not guarantee this.
+    /// Use [`Self::load`] if you cannot guarantee file stability.
+    ///
     /// # Examples
     ///
     /// ```no_run
     /// use rsmarisa::Trie;
     ///
     /// let mut trie = Trie::new();
-    /// trie.mmap("dictionary.marisa").unwrap();
+    /// // SAFETY: The application guarantees that the file stays unchanged from
+    /// // before this call until its mapping is dropped, including after moves.
+    /// unsafe { trie.mmap("dictionary.marisa").unwrap() };
+    /// ```
+    ///
+    /// File-backed mapping requires an explicit unsafe call:
+    ///
+    /// ```compile_fail,E0133
+    /// use rsmarisa::Trie;
+    /// let mut trie = Trie::new();
+    /// let _ = trie.mmap("dictionary.marisa");
     /// ```
     ///
     /// Requires the `mmap` feature (enabled by default; unavailable on WASM).
     #[cfg(feature = "mmap")]
-    pub fn mmap(&mut self, filename: &str) -> std::io::Result<()> {
+    pub unsafe fn mmap(&mut self, filename: &str) -> std::io::Result<()> {
         let mut temp = Box::new(LoudsTrie::new());
-        temp.mmap(filename)?;
+        // SAFETY: The caller guarantees file stability for the mapping's
+        // lifetime, including when ownership transfers to this trie or beyond.
+        unsafe { temp.mmap(filename)? };
         self.trie = Some(temp);
         Ok(())
     }
@@ -840,7 +860,9 @@ mod tests {
 
         // Load with mmap
         let mut trie2 = Trie::new();
-        trie2.mmap(path).unwrap();
+        // SAFETY: This test owns the temporary file and does not change it
+        // between this call and dropping the mapped trie.
+        unsafe { trie2.mmap(path) }.unwrap();
 
         // Verify structure
         assert_eq!(trie2.num_keys(), 3);
@@ -894,7 +916,9 @@ mod tests {
 
         // Load via mmap
         let mut trie_mmap = Trie::new();
-        trie_mmap.mmap(path).unwrap();
+        // SAFETY: The test file is unchanged from before this call until the
+        // mapped trie is dropped. Loading/looking up does not modify the file.
+        unsafe { trie_mmap.mmap(path) }.unwrap();
 
         // Verify identical structure
         assert_eq!(trie_load.num_keys(), trie_mmap.num_keys());
@@ -934,8 +958,12 @@ mod tests {
     #[test]
     fn test_trie_mmap_file_not_found() {
         // Rust-specific: Test that mmap with non-existent file returns error
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing.marisa");
         let mut trie = Trie::new();
-        let result = trie.mmap("/nonexistent/file.marisa");
+        // SAFETY: This test exclusively owns the directory and never creates
+        // the file, so the call cannot create a mapping.
+        let result = unsafe { trie.mmap(path.to_str().unwrap()) };
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);

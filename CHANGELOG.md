@@ -66,9 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: File-backed `Trie::mmap`, `LoudsTrie::mmap`, and
+  `Mapper::open_file` now require an unsafe call. The caller must prevent
+  backing-file modification or truncation from before the call until the mapping
+  is dropped, including after its owner is moved or swapped. `Mapper::open_file` remains
+  unsafe without the `mmap` feature, where it returns `Unsupported`. Owned
+  `load`/`read` and static-memory `map`/`open_memory` remain safe; the native
+  dictionary format is unchanged.
 - **BREAKING**: Raw input and mapping require `bytemuck::Pod`; raw output
   requires `bytemuck::NoUninit`. `Copy` alone cannot guarantee safe binary I/O.
-  High-level trie signatures and the native dictionary format are unchanged.
+  These bounds do not change high-level trie `load`/`read` signatures or the
+  native dictionary format.
 - **BREAKING**: Query and key setters now own input snapshots instead of borrowing
   unchecked pointers. Later input mutation no longer changes stored bytes; clones and
   search results have independent storage.

@@ -77,16 +77,26 @@ impl Mapper {
     ///
     /// # Safety
     ///
-    /// This function uses memory mapping which is inherently unsafe because:
-    /// - The file could be modified externally while mapped
-    /// - The file could be truncated while mapped
+    /// You must ensure that the backing file is not modified or truncated by
+    /// any handle or process, from before this call until the mapping is dropped.
+    /// This obligation follows the mapping if the returned mapper is moved or
+    /// swapped into another owner. Opening the file read-only does not prevent
+    /// changes through other handles or processes.
     ///
-    /// The caller must ensure that the file is not modified during the lifetime
-    /// of the Mapper. Files should be opened read-only.
+    /// Use [`Reader`](super::Reader) instead if you cannot guarantee file stability.
+    ///
+    /// File-backed mapping requires an explicit unsafe call:
+    ///
+    /// ```compile_fail,E0133
+    /// use rsmarisa::grimoire::io::Mapper;
+    /// let _ = Mapper::open_file("dictionary.marisa");
+    /// ```
     #[cfg(feature = "mmap")]
-    pub fn open_file(filename: &str) -> io::Result<Self> {
+    pub unsafe fn open_file(filename: &str) -> io::Result<Self> {
         use std::fs::File;
         let file = File::open(filename)?;
+        // SAFETY: The caller guarantees file stability from before this call
+        // until the mapping is dropped, including after ownership transfers.
         let mmap = unsafe { Mmap::map(&file)? };
         Ok(Mapper {
             mmap: Some(mmap),
@@ -99,8 +109,21 @@ impl Mapper {
     ///
     /// Without the `mmap` feature, file-backed mapping is not available.
     /// Returns an error indicating mmap is not supported.
+    ///
+    /// # Safety
+    ///
+    /// There are no additional safety requirements when `mmap` is disabled:
+    /// this stub creates no mapping. Its signature stays unsafe so that enabling
+    /// the feature does not silently add obligations to a safe call.
+    ///
+    /// The unsafe call requirement is consistent across feature configurations:
+    ///
+    /// ```compile_fail,E0133
+    /// use rsmarisa::grimoire::io::Mapper;
+    /// let _ = Mapper::open_file("dictionary.marisa");
+    /// ```
     #[cfg(not(feature = "mmap"))]
-    pub fn open_file(filename: &str) -> io::Result<Self> {
+    pub unsafe fn open_file(filename: &str) -> io::Result<Self> {
         let _ = filename;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -331,7 +354,9 @@ impl Mapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "mmap")]
     use std::io::Write;
+    #[cfg(feature = "mmap")]
     use tempfile::NamedTempFile;
 
     #[test]
@@ -360,7 +385,9 @@ mod tests {
         temp_file.flush().unwrap();
 
         let path = temp_file.path().to_str().unwrap();
-        let mapper = Mapper::open_file(path).unwrap();
+        // SAFETY: The test owns this temporary file and does not modify or
+        // truncate it from this call until the mapper is dropped.
+        let mapper = unsafe { Mapper::open_file(path) }.unwrap();
 
         assert!(mapper.is_open());
         assert_eq!(mapper.size(), 5);
@@ -370,8 +397,21 @@ mod tests {
     #[cfg(feature = "mmap")]
     #[test]
     fn test_mapper_open_file_not_found() {
-        let result = Mapper::open_file("/nonexistent/file.dat");
-        assert!(result.is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing.dat");
+        // SAFETY: This test exclusively owns the directory and never creates
+        // the file, so the call cannot create a mapping.
+        let result = unsafe { Mapper::open_file(path.to_str().unwrap()) };
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[cfg(not(feature = "mmap"))]
+    #[test]
+    fn test_mapper_file_mapping_unsupported() {
+        // Rust-specific: Disabling mmap keeps the API unsafe and returns Unsupported.
+        // SAFETY: This feature configuration never creates a file mapping.
+        let result = unsafe { Mapper::open_file("unused.marisa") };
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]
@@ -547,7 +587,9 @@ mod tests {
         temp_file.flush().unwrap();
 
         let path = temp_file.path().to_str().unwrap();
-        let mut mapper = Mapper::open_file(path).unwrap();
+        // SAFETY: The test owns this temporary file and does not modify or
+        // truncate it from this call until the mapper is dropped.
+        let mut mapper = unsafe { Mapper::open_file(path) }.unwrap();
 
         // Test reading from file-backed mmap
         let mut values = [0u8; 4];
