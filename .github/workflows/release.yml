@@ -10,7 +10,6 @@ env:
 
 jobs:
   publish:
-    if: github.repository == 'tokuhirom/rsmarisa'
     name: Publish to crates.io
     runs-on: ubuntu-latest
     steps:
